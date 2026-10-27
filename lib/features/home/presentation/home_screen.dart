@@ -23,37 +23,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final colors = Theme.of(context).colorScheme;
     final name = user?.displayName?.split(' ').first ?? 'there';
     return Scaffold(
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final horizontalPadding = constraints.maxWidth > 700 ? 48.0 : 20.0;
-          return RefreshIndicator.adaptive(
-            onRefresh: _refresh,
-            child: ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              padding: EdgeInsets.fromLTRB(
-                horizontalPadding,
-                18,
-                horizontalPadding,
-                32,
-              ),
-              children: [
-                _DashboardHeader(
-                  name: name,
-                  onNotifications: () =>
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('You’re all caught up.')),
-                      ),
+      body: SafeArea(
+        bottom: false,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final horizontalPadding = constraints.maxWidth > 700 ? 48.0 : 20.0;
+            return RefreshIndicator.adaptive(
+              onRefresh: _refresh,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: EdgeInsets.fromLTRB(
+                  horizontalPadding,
+                  18,
+                  horizontalPadding,
+                  32,
                 ),
-                const SizedBox(height: 24),
-                const _FocusHeroCard(),
-                const SizedBox(height: 24),
-                const _OverviewCard(),
-                const SizedBox(height: 24),
-                _NextUpCard(colors: colors),
-              ],
-            ),
-          );
-        },
+                children: [
+                  _DashboardHeader(
+                    name: name,
+                    onNotifications: () =>
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('You’re all caught up.'),
+                          ),
+                        ),
+                  ),
+                  const SizedBox(height: 24),
+                  const _FocusHeroCard(),
+                  const SizedBox(height: 24),
+                  const _OverviewCard(),
+                  const SizedBox(height: 24),
+                  _NextUpCard(colors: colors),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }

@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
@@ -24,7 +25,7 @@ class AppShell extends StatelessWidget {
     final motion = Theme.of(context).extension<MotionTheme>();
     return Scaffold(
       body: navigationShell,
-      bottomNavigationBar: _LiquidNavigationBar(
+      bottomNavigationBar: LiquidNavigationBar(
         selectedIndex: navigationShell.currentIndex,
         onDestinationSelected: _onDestinationSelected,
         motionDuration: motion?.standardDuration ?? AppMotion.standard,
@@ -33,11 +34,14 @@ class AppShell extends StatelessWidget {
   }
 }
 
-class _LiquidNavigationBar extends StatefulWidget {
-  const _LiquidNavigationBar({
+/// The shell's navigation surface. Public so its motion can be tested without
+/// constructing a router or changing the StatefulShellRoute's branch state.
+class LiquidNavigationBar extends StatefulWidget {
+  const LiquidNavigationBar({
     required this.selectedIndex,
     required this.onDestinationSelected,
     required this.motionDuration,
+    super.key,
   });
 
   final int selectedIndex;
@@ -45,50 +49,138 @@ class _LiquidNavigationBar extends StatefulWidget {
   final Duration motionDuration;
 
   @override
-  State<_LiquidNavigationBar> createState() => _LiquidNavigationBarState();
+  State<LiquidNavigationBar> createState() => _LiquidNavigationBarState();
 }
 
-class _LiquidNavigationBarState extends State<_LiquidNavigationBar>
+class _LiquidNavigationBarState extends State<LiquidNavigationBar>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  var _fromPosition = 0.0;
-  var _toPosition = 0.0;
-
   static const _destinations = [
     (icon: Icons.grid_view_rounded, label: 'Home'),
     (icon: Icons.person_outline_rounded, label: 'Profile'),
     (icon: Icons.tune_rounded, label: 'Settings'),
   ];
+  static const _spring = SpringDescription(
+    mass: 0.8,
+    stiffness: 320,
+    damping: 32,
+  );
+
+  late final AnimationController _controller;
+  late _LiquidShape _startShape;
+  late List<double> _labelStarts;
+  late int _targetIndex;
+  bool _reduceMotion = false;
 
   @override
   void initState() {
     super.initState();
-    _fromPosition = widget.selectedIndex.toDouble();
-    _toPosition = widget.selectedIndex.toDouble();
-    _controller = AnimationController(
-      vsync: this,
-      duration: widget.motionDuration,
+    _targetIndex = widget.selectedIndex;
+    _startShape = _LiquidShape.rest(_targetIndex);
+    _labelStarts = List.generate(
+      _destinations.length,
+      (index) => index == _targetIndex ? 1 : 0,
     );
+    _controller = AnimationController.unbounded(vsync: this, value: 1);
   }
 
   @override
-  void didUpdateWidget(covariant _LiquidNavigationBar oldWidget) {
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reduceMotion =
+        widget.motionDuration == Duration.zero ||
+        MediaQuery.disableAnimationsOf(context);
+    if (reduceMotion && !_reduceMotion) {
+      _snapToSelection();
+    }
+    _reduceMotion = reduceMotion;
+  }
+
+  @override
+  void didUpdateWidget(covariant LiquidNavigationBar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.motionDuration != widget.motionDuration) {
-      _controller.duration = widget.motionDuration;
+    final reduceMotion =
+        widget.motionDuration == Duration.zero ||
+        MediaQuery.disableAnimationsOf(context);
+    if (reduceMotion) {
+      _reduceMotion = true;
+      _snapToSelection();
+      return;
     }
-    if (oldWidget.selectedIndex != widget.selectedIndex) {
-      // Start the next transition from the indicator's current position. This
-      // keeps the liquid motion continuous when the user taps quickly.
-      final progress = Curves.easeOutCubic.transform(_controller.value);
-      _fromPosition += (_toPosition - _fromPosition) * progress;
-      _toPosition = widget.selectedIndex.toDouble();
-      if (widget.motionDuration == Duration.zero) {
-        _controller.value = 1;
-      } else {
-        _controller.forward(from: 0);
-      }
-    }
+    _reduceMotion = false;
+    if (oldWidget.selectedIndex == widget.selectedIndex) return;
+
+    // Capture all visible geometry and label states before changing the target.
+    // A tap during the stretch therefore starts at the exact painted frame.
+    _startShape = _shapeAt(_progress);
+    _labelStarts = List.generate(_destinations.length, _labelValue);
+    _targetIndex = widget.selectedIndex;
+    _controller.value = 0;
+    _controller.animateWith(
+      SpringSimulation(
+        _spring,
+        0,
+        1,
+        0,
+        tolerance: const Tolerance(distance: 0.001, velocity: 0.001),
+      ),
+    );
+  }
+
+  void _snapToSelection() {
+    _controller.stop();
+    _targetIndex = widget.selectedIndex;
+    _startShape = _LiquidShape.rest(_targetIndex);
+    _labelStarts = List.generate(
+      _destinations.length,
+      (index) => index == _targetIndex ? 1 : 0,
+    );
+    _controller.value = 1;
+  }
+
+  double get _progress => _controller.value.clamp(0.0, 1.0);
+
+  double _labelValue(int index) {
+    final t = Curves.easeInOutCubic.transform(_progress);
+    return _lerp(_labelStarts[index], index == _targetIndex ? 1 : 0, t);
+  }
+
+  _LiquidShape _shapeAt(double t) {
+    final target = _targetIndex.toDouble();
+    if (t >= 1) return _LiquidShape.rest(_targetIndex);
+    final movingRight =
+        target >= (_startShape.leftPosition + _startShape.rightPosition) / 2;
+    final lead = Curves.easeInOutCubic.transform((t / 0.90).clamp(0.0, 1.0));
+    final trail = Curves.easeInOutCubic.transform(
+      ((t - 0.10) / 0.90).clamp(0.0, 1.0),
+    );
+    final leftT = movingRight ? trail : lead;
+    final rightT = movingRight ? lead : trail;
+    final wave = math.sin(math.pi * t).clamp(0.0, 1.0);
+    final squeeze =
+        math.sin(math.pi * (t / 0.22).clamp(0.0, 1.0)).clamp(0.0, 1.0) *
+        (1 - t);
+    final headExtra = 0.8 * wave;
+    final tailInset = 1.1 * wave;
+
+    return _LiquidShape(
+      leftPosition: _lerp(_startShape.leftPosition, target, leftT),
+      rightPosition: _lerp(_startShape.rightPosition, target, rightT),
+      leftWidth:
+          _lerp(_startShape.leftWidth, 29, t) +
+          (movingRight ? -tailInset : headExtra),
+      rightWidth:
+          _lerp(_startShape.rightWidth, 29, t) +
+          (movingRight ? headExtra : -tailInset),
+      leftHeight:
+          _lerp(_startShape.leftHeight, 21, t) -
+          1.5 * squeeze +
+          (movingRight ? -0.5 * wave : 0.5 * wave),
+      rightHeight:
+          _lerp(_startShape.rightHeight, 21, t) -
+          1.5 * squeeze +
+          (movingRight ? 0.5 * wave : -0.5 * wave),
+      bridgeHeight: _lerp(_startShape.bridgeHeight, 21, t) - 4 * wave,
+    );
   }
 
   @override
@@ -99,8 +191,7 @@ class _LiquidNavigationBarState extends State<_LiquidNavigationBar>
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colors = theme.colorScheme;
+    final colors = Theme.of(context).colorScheme;
     return SafeArea(
       top: false,
       child: Container(
@@ -117,19 +208,18 @@ class _LiquidNavigationBarState extends State<_LiquidNavigationBar>
             return AnimatedBuilder(
               animation: _controller,
               builder: (context, child) {
-                final progress = Curves.easeOutCubic.transform(
-                  _controller.value,
-                );
+                final shape = _shapeAt(_progress);
                 return Stack(
                   children: [
                     Positioned.fill(
-                      child: CustomPaint(
-                        painter: _LiquidIndicatorPainter(
-                          progress: progress,
-                          liquidProgress: _controller.value,
-                          fromCenter: itemWidth * (_fromPosition + 0.5),
-                          toCenter: itemWidth * (_toPosition + 0.5),
-                          color: colors.primary,
+                      child: RepaintBoundary(
+                        key: const Key('liquid-indicator'),
+                        child: CustomPaint(
+                          painter: _LiquidIndicatorPainter(
+                            shape: shape,
+                            itemWidth: itemWidth,
+                            color: colors.primary,
+                          ),
                         ),
                       ),
                     ),
@@ -145,7 +235,13 @@ class _LiquidNavigationBarState extends State<_LiquidNavigationBar>
                               icon: _destinations[index].icon,
                               label: _destinations[index].label,
                               selected: widget.selectedIndex == index,
-                              animationProgress: _controller.value,
+                              selection: _labelValue(index),
+                              jiggleProgress:
+                                  _reduceMotion ||
+                                      widget.selectedIndex != index ||
+                                      !_controller.isAnimating
+                                  ? null
+                                  : _progress,
                               color: colors,
                               onTap: () => widget.onDestinationSelected(index),
                             ),
@@ -168,7 +264,8 @@ class _NavigationDestination extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.selected,
-    required this.animationProgress,
+    required this.selection,
+    required this.jiggleProgress,
     required this.color,
     required this.onTap,
   });
@@ -176,18 +273,26 @@ class _NavigationDestination extends StatelessWidget {
   final IconData icon;
   final String label;
   final bool selected;
-  final double animationProgress;
+  final double selection;
+  final double? jiggleProgress;
   final ColorScheme color;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final jiggleStrength = selected
-        ? math.sin(math.pi * animationProgress).clamp(0.0, 1.0)
-        : 0.0;
-    final jiggleAngle =
-        math.sin(animationProgress * math.pi * 3) * jiggleStrength * 0.045;
-    final iconScale = selected ? 1.08 + (jiggleStrength * 0.06) : 1.0;
+    final t = jiggleProgress;
+    final decay = t == null ? 0.0 : math.exp(-2.4 * t) * (1 - t);
+    final oscillation = t == null ? 0.0 : math.sin(1.6 * math.pi * t);
+    final scale = 1 + 0.04 * selection + 0.23 * decay * oscillation;
+    final lift = t == null
+        ? 0.0
+        : -2.0 *
+              math.exp(-1.5 * t) *
+              math.sin(1.5 * math.pi * t).abs() *
+              (1 - t);
+    final rotation = t == null
+        ? 0.0
+        : 0.035 * math.exp(-3 * t) * math.sin(3 * math.pi * t) * (1 - t);
 
     return Semantics(
       button: true,
@@ -203,30 +308,38 @@ class _NavigationDestination extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Transform.translate(
-                offset: Offset(0, -jiggleStrength * 1.5),
+                offset: Offset(0, lift),
                 child: Transform.rotate(
-                  angle: jiggleAngle,
+                  angle: rotation,
                   child: Transform.scale(
-                    scale: iconScale,
+                    scale: scale,
                     child: Icon(
                       icon,
                       size: 22,
-                      color: selected
-                          ? color.onPrimary
-                          : color.onSurfaceVariant,
+                      color: Color.lerp(
+                        color.onSurfaceVariant,
+                        color.onPrimary,
+                        selection,
+                      ),
                     ),
                   ),
                 ),
               ),
               const SizedBox(height: 8),
-              AnimatedDefaultTextStyle(
-                duration: const Duration(milliseconds: 220),
-                curve: Curves.easeOutCubic,
+              Text(
+                label,
                 style: Theme.of(context).textTheme.labelSmall!.copyWith(
-                  color: selected ? color.primary : color.onSurfaceVariant,
-                  fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
+                  color: Color.lerp(
+                    color.onSurfaceVariant,
+                    color.primary,
+                    selection,
+                  ),
+                  fontWeight: FontWeight.lerp(
+                    FontWeight.w500,
+                    FontWeight.w800,
+                    selection,
+                  ),
                 ),
-                child: Text(label),
               ),
             ],
           ),
@@ -236,109 +349,172 @@ class _NavigationDestination extends StatelessWidget {
   }
 }
 
+class _LiquidShape {
+  const _LiquidShape({
+    required this.leftPosition,
+    required this.rightPosition,
+    required this.leftWidth,
+    required this.rightWidth,
+    required this.leftHeight,
+    required this.rightHeight,
+    required this.bridgeHeight,
+  });
+
+  factory _LiquidShape.rest(int index) => _LiquidShape(
+    leftPosition: index.toDouble(),
+    rightPosition: index.toDouble(),
+    leftWidth: 29,
+    rightWidth: 29,
+    leftHeight: 21,
+    rightHeight: 21,
+    bridgeHeight: 21,
+  );
+
+  final double leftPosition;
+  final double rightPosition;
+  final double leftWidth;
+  final double rightWidth;
+  final double leftHeight;
+  final double rightHeight;
+  final double bridgeHeight;
+}
+
 class _LiquidIndicatorPainter extends CustomPainter {
   const _LiquidIndicatorPainter({
-    required this.progress,
-    required this.liquidProgress,
-    required this.fromCenter,
-    required this.toCenter,
+    required this.shape,
+    required this.itemWidth,
     required this.color,
   });
 
-  final double progress;
-  final double liquidProgress;
-  final double fromCenter;
-  final double toCenter;
+  final _LiquidShape shape;
+  final double itemWidth;
   final Color color;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final centerX = fromCenter + (toCenter - fromCenter) * progress;
-    final distance = (toCenter - fromCenter).abs();
-    if (distance < 0.01) {
-      _drawRestingPill(canvas, centerX);
+    const centerY = 28.0;
+    final firstX = (shape.leftPosition + 0.5) * itemWidth;
+    final secondX = (shape.rightPosition + 0.5) * itemWidth;
+    final firstIsLeft = firstX <= secondX;
+    final leftX = firstIsLeft ? firstX : secondX;
+    final rightX = firstIsLeft ? secondX : firstX;
+    final leftWidth = firstIsLeft ? shape.leftWidth : shape.rightWidth;
+    final rightWidth = firstIsLeft ? shape.rightWidth : shape.leftWidth;
+    final leftHeight = firstIsLeft ? shape.leftHeight : shape.rightHeight;
+    final rightHeight = firstIsLeft ? shape.rightHeight : shape.leftHeight;
+    final span = rightX - leftX;
+    final paint = Paint()
+      ..color = color
+      ..isAntiAlias = true;
+
+    if (span < 12) {
+      // At rest this is exactly a 58 x 42 horizontal pill.
+      final centerX = (leftX + rightX) / 2;
+      final height = leftHeight + rightHeight;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(
+            center: Offset(centerX, centerY),
+            width: leftWidth + rightWidth + span,
+            height: height,
+          ),
+          Radius.circular(height / 2),
+        ),
+        paint,
+      );
       return;
     }
 
-    final direction = toCenter >= fromCenter ? 1.0 : -1.0;
-    final phase = Curves.easeInOut.transform(
-      math.sin(math.pi * liquidProgress.clamp(0.0, 1.0)).clamp(0.0, 1.0),
+    final leftTip = leftX - leftWidth;
+    final rightTip = rightX + rightWidth;
+    final leftCrown = leftX - 2;
+    final rightCrown = rightX + 2;
+    final neck = (leftX + rightX) / 2;
+    // Fade the narrower bridge in as the lobes separate, so the outline does
+    // not change abruptly when it leaves the compact pill geometry.
+    final waist = _lerp(
+      (leftHeight + rightHeight) / 2,
+      shape.bridgeHeight,
+      ((span - 12) / 26).clamp(0.0, 1.0),
     );
-    const centerY = 28.0;
-    final separation = distance * 0.9 * phase;
-    final headX = centerX + direction * separation / 2;
-    final tailX = centerX - direction * separation / 2;
-    final headRadius = 21 + phase * 4;
-    final tailRadius = 21 - phase * 5;
-    final paint = Paint()..color = color;
+
+    // One closed outline gives the head, narrow bridge, and smaller trailing
+    // lobe matching tangents. There are no overlapping paths or hard seams.
     final path = Path()
-      // Top edge: the head pulls away while the tail stays rounded behind it.
-      ..moveTo(tailX, centerY - tailRadius)
+      ..moveTo(leftTip, centerY)
       ..cubicTo(
-        tailX + direction * separation * 0.34,
-        centerY - tailRadius,
-        headX - direction * separation * 0.24,
-        centerY - headRadius,
-        headX,
-        centerY - headRadius,
+        leftTip,
+        centerY - leftHeight * 0.72,
+        leftX - leftWidth * 0.72,
+        centerY - leftHeight,
+        leftCrown,
+        centerY - leftHeight,
       )
-      // Leading lobe.
       ..cubicTo(
-        headX + direction * headRadius * 0.58,
-        centerY - headRadius * 0.72,
-        headX + direction * headRadius * 0.58,
-        centerY + headRadius * 0.72,
-        headX,
-        centerY + headRadius,
+        leftCrown + span * 0.25,
+        centerY - leftHeight,
+        neck - span * 0.18,
+        centerY - waist,
+        neck,
+        centerY - waist,
       )
-      // Bottom edge returning to the smaller trailing lobe.
       ..cubicTo(
-        headX - direction * separation * 0.24,
-        centerY + headRadius,
-        tailX + direction * separation * 0.34,
-        centerY + tailRadius,
-        tailX,
-        centerY + tailRadius,
+        neck + span * 0.18,
+        centerY - waist,
+        rightCrown - span * 0.25,
+        centerY - rightHeight,
+        rightCrown,
+        centerY - rightHeight,
       )
-      // Rounded tail lobe.
       ..cubicTo(
-        tailX - direction * tailRadius * 0.58,
-        centerY + tailRadius * 0.72,
-        tailX - direction * tailRadius * 0.58,
-        centerY - tailRadius * 0.72,
-        tailX,
-        centerY - tailRadius,
+        rightX + rightWidth * 0.72,
+        centerY - rightHeight,
+        rightTip,
+        centerY - rightHeight * 0.72,
+        rightTip,
+        centerY,
+      )
+      ..cubicTo(
+        rightTip,
+        centerY + rightHeight * 0.72,
+        rightX + rightWidth * 0.72,
+        centerY + rightHeight,
+        rightCrown,
+        centerY + rightHeight,
+      )
+      ..cubicTo(
+        rightCrown - span * 0.25,
+        centerY + rightHeight,
+        neck + span * 0.18,
+        centerY + waist,
+        neck,
+        centerY + waist,
+      )
+      ..cubicTo(
+        neck - span * 0.18,
+        centerY + waist,
+        leftCrown + span * 0.25,
+        centerY + leftHeight,
+        leftCrown,
+        centerY + leftHeight,
+      )
+      ..cubicTo(
+        leftX - leftWidth * 0.72,
+        centerY + leftHeight,
+        leftTip,
+        centerY + leftHeight * 0.72,
+        leftTip,
+        centerY,
       )
       ..close();
-
-    // Keep a small drop attached to the back of the moving liquid. It merges
-    // with the tail at the peak of the stretch and disappears at rest.
-    if (phase > 0.02) {
-      canvas.drawCircle(
-        Offset(tailX - direction * tailRadius * 0.62, centerY),
-        phase * 5,
-        paint,
-      );
-    }
     canvas.drawPath(path, paint);
-  }
-
-  void _drawRestingPill(Canvas canvas, double centerX) {
-    final paint = Paint()..color = color;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromCenter(center: Offset(centerX, 28), width: 58, height: 42),
-        const Radius.circular(21),
-      ),
-      paint,
-    );
   }
 
   @override
   bool shouldRepaint(covariant _LiquidIndicatorPainter oldDelegate) =>
-      oldDelegate.progress != progress ||
-      oldDelegate.liquidProgress != liquidProgress ||
-      oldDelegate.fromCenter != fromCenter ||
-      oldDelegate.toCenter != toCenter ||
+      oldDelegate.shape != shape ||
+      oldDelegate.itemWidth != itemWidth ||
       oldDelegate.color != color;
 }
+
+double _lerp(double from, double to, double t) => from + (to - from) * t;
