@@ -255,65 +255,83 @@ class _LiquidIndicatorPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final centerX = fromCenter + (toCenter - fromCenter) * progress;
     final distance = (toCenter - fromCenter).abs();
+    if (distance < 0.01) {
+      _drawRestingPill(canvas, centerX);
+      return;
+    }
+
     final direction = toCenter >= fromCenter ? 1.0 : -1.0;
-    final liquid = Curves.easeInOut.transform(
-      math.sin(math.pi * liquidProgress).clamp(0.0, 1.0),
+    final phase = Curves.easeInOut.transform(
+      math.sin(math.pi * liquidProgress.clamp(0.0, 1.0)).clamp(0.0, 1.0),
     );
-    final stretchWidth = math.min(distance * 0.72, size.width * 0.42);
-    final width = 58 + (stretchWidth * liquid);
-    final height = 42 - (liquid * 5);
     const centerY = 28.0;
-    final radius = height / 2;
-    final left = centerX - width / 2;
-    final right = centerX + width / 2;
-    final top = centerY - height / 2;
-    final bottom = centerY + height / 2;
-    final headBulge = liquid * 16;
-    final tailBulge = liquid * 8;
+    final separation = distance * 0.9 * phase;
+    final headX = centerX + direction * separation / 2;
+    final tailX = centerX - direction * separation / 2;
+    final headRadius = 21 + phase * 4;
+    final tailRadius = 21 - phase * 5;
     final paint = Paint()..color = color;
     final path = Path()
-      ..moveTo(left + radius, top)
+      // Top edge: the head pulls away while the tail stays rounded behind it.
+      ..moveTo(tailX, centerY - tailRadius)
       ..cubicTo(
-        left + radius + tailBulge,
-        top - liquid * 3,
-        right - radius - headBulge,
-        top - liquid * 3,
-        right - radius,
-        top,
+        tailX + direction * separation * 0.34,
+        centerY - tailRadius,
+        headX - direction * separation * 0.24,
+        centerY - headRadius,
+        headX,
+        centerY - headRadius,
       )
+      // Leading lobe.
       ..cubicTo(
-        right + (direction > 0 ? headBulge : tailBulge),
-        top,
-        right + (direction > 0 ? headBulge : tailBulge),
-        bottom,
-        right - radius,
-        bottom,
+        headX + direction * headRadius * 0.58,
+        centerY - headRadius * 0.72,
+        headX + direction * headRadius * 0.58,
+        centerY + headRadius * 0.72,
+        headX,
+        centerY + headRadius,
       )
+      // Bottom edge returning to the smaller trailing lobe.
       ..cubicTo(
-        right - radius - headBulge,
-        bottom + liquid * 3,
-        left + radius + tailBulge,
-        bottom + liquid * 3,
-        left + radius,
-        bottom,
+        headX - direction * separation * 0.24,
+        centerY + headRadius,
+        tailX + direction * separation * 0.34,
+        centerY + tailRadius,
+        tailX,
+        centerY + tailRadius,
       )
+      // Rounded tail lobe.
       ..cubicTo(
-        left - (direction < 0 ? headBulge : tailBulge),
-        bottom,
-        left - (direction < 0 ? headBulge : tailBulge),
-        top,
-        left + radius,
-        top,
+        tailX - direction * tailRadius * 0.58,
+        centerY + tailRadius * 0.72,
+        tailX - direction * tailRadius * 0.58,
+        centerY - tailRadius * 0.72,
+        tailX,
+        centerY - tailRadius,
       )
       ..close();
-    canvas.drawPath(path, paint);
 
-    // A smaller trailing drop gives the capsule a soft, liquid pull as it
-    // leaves the previous destination.
-    if (liquid > 0.02 && distance > 0) {
-      final tailX = centerX - direction * (width / 2 - 6);
-      canvas.drawCircle(Offset(tailX, centerY), 5 + liquid * 7, paint);
+    // Keep a small drop attached to the back of the moving liquid. It merges
+    // with the tail at the peak of the stretch and disappears at rest.
+    if (phase > 0.02) {
+      canvas.drawCircle(
+        Offset(tailX - direction * tailRadius * 0.62, centerY),
+        phase * 5,
+        paint,
+      );
     }
+    canvas.drawPath(path, paint);
+  }
+
+  void _drawRestingPill(Canvas canvas, double centerX) {
+    final paint = Paint()..color = color;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(centerX, 28), width: 58, height: 42),
+        const Radius.circular(21),
+      ),
+      paint,
+    );
   }
 
   @override
